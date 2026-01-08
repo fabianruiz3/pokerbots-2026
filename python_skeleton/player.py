@@ -11,8 +11,9 @@ from skeleton.states import NUM_ROUNDS, STARTING_STACK
 from skeleton.bot import Bot
 from skeleton.runner import parse_args, run_bot
 
+
 import random
-import eval7
+import pkrbot
 
 FINAL_BOARD_CARDS = 6
 
@@ -25,14 +26,14 @@ class Player(Bot):
 
         self.cruise_mode = False
 
-    def _get_board_cards(self, round_state) -> list[str]:
+    def _get_board_cards(self, round_state):
         """
         Returns public board as list[str] like ['3d','2c',...]
         Works across this PB2026 skeleton where 'deck' is NOT exposed.
         """
         return [str(c) for c in round_state.board]
 
-    def _should_cruise(self, game_state) -> bool:
+    def _should_cruise(self, game_state):
         """
         Conservative “chip cruising” threshold.
         If bankroll lead is big enough vs remaining rounds, stop taking variance.
@@ -43,10 +44,10 @@ class Player(Bot):
         safety = 2 * remaining
         return bankroll >= safety
 
-    def _panic(self, game_clock: float) -> bool:
+    def _panic(self, game_clock):
         return game_clock < 1.5
 
-    def _clock_mult(self, game_clock: float) -> float:
+    def _clock_mult(self, game_clock):
         if game_clock < 2.5:
             return 0.08
         if game_clock < 5.0:
@@ -59,21 +60,21 @@ class Player(Bot):
             return 0.60
         return 1.0
 
-    def _post_sims(self, street_n: int, game_clock: float) -> int:
+    def _post_sims(self, street_n, game_clock):
         mult = self._clock_mult(game_clock)
         base = self.base_sims_post * (1.0 if street_n <= 4 else 1.15 if street_n <= 5 else 1.25)
         s = int(base * mult)
         return max(22, min(420, s))
 
-    def _discard_sims(self, game_clock: float) -> int:
+    def _discard_sims(self, game_clock):
         s = int(self.base_sims_discard * self._clock_mult(game_clock))
         return max(18, min(160, s))
 
-    def _pre_sims(self, game_clock: float) -> int:
+    def _pre_sims(self, game_clock):
         s = int(self.base_sims_pre * self._clock_mult(game_clock))
         return max(20, min(200, s))
 
-    def _opp_bias_from_action(self, continue_cost: int, pot: int, street_n: int) -> float:
+    def _opp_bias_from_action(self, continue_cost, pot, street_n):
         if continue_cost <= 0:
             return 0.0
         frac = continue_cost / max(1.0, pot)
@@ -81,15 +82,15 @@ class Player(Bot):
         x = frac * street_boost
         return max(0.0, min(1.0, 1.4 * x))
 
-    def mc_equity(self, round_state, my_hole_cards, sims: int, opp_bias: float = 0.0) -> float:
+    def mc_equity(self, round_state, my_hole_cards, sims, opp_bias=0.0):
         board_cards = self._get_board_cards(round_state)
-        board = [eval7.Card(c) for c in board_cards]
-        hole = [eval7.Card(c) for c in my_hole_cards]
+        board = [pkrbot.Card(c) for c in board_cards]
+        hole = [pkrbot.Card(c) for c in my_hole_cards]
 
         opp_hole_n = 3 if (len(my_hole_cards) == 3 and len(board_cards) < 2) else 2
         remaining_board = max(0, FINAL_BOARD_CARDS - len(board_cards))
 
-        deck = eval7.Deck()
+        deck = pkrbot.Deck()
         used = hole + board
         for c in used:
             if c in deck.cards:
@@ -110,11 +111,11 @@ class Player(Bot):
             opp = draw[:opp_hole_n]
             runout = draw[opp_hole_n:]
 
-            my_val = eval7.evaluate(hole + board + runout)
-            opp_val = eval7.evaluate(opp + board + runout)
+            my_val = pkrbot.evaluate(hole + board + runout)
+            opp_val = pkrbot.evaluate(opp + board + runout)
 
             if opp_bias > 0:
-                opp_class = eval7.handtype(opp_val)
+                opp_class = pkrbot.handtype(opp_val)
                 t = tier.get(opp_class, 0)
                 accept_p = min(1.0, max(0.18, 1.0 - 0.60 * opp_bias + 0.10 * t + 0.06 * opp_bias * t))
                 if random.random() > accept_p:
@@ -129,7 +130,7 @@ class Player(Bot):
 
         return (wins + 0.5 * ties) / max(1, sims)
 
-    def choose_discard_mc(self, game_state, round_state, active_player) -> int:
+    def choose_discard_mc(self, game_state, round_state, active_player):
         hole = list(round_state.hands[active_player])
         sims = self._discard_sims(game_state.game_clock)
 
