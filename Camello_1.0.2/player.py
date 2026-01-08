@@ -5,12 +5,12 @@ MC-driven bot for Pokerbots 2026 (3 hole cards, discard twice, 6-card public boa
 - Postflop: MC equity vs bet-size-biased opponent + pot-fraction sizing (0.8–1.2 pot).
 - Cruise control: auto-fold/check when bankroll lead is sufficient.
 - Clock safety: aggressive sim throttling + panic mode under very low clock.
-- NEW: simple Bayesian-style range learning from showdowns, used inside MC via tier-based weighting.
 """
 from skeleton.actions import FoldAction, CallAction, CheckAction, RaiseAction, DiscardAction
-from skeleton.states import NUM_ROUNDS, STARTING_STACK, TerminalState, RoundState, GameState
+from skeleton.states import NUM_ROUNDS, STARTING_STACK
 from skeleton.bot import Bot
 from skeleton.runner import parse_args, run_bot
+
 
 import random
 import pkrbot
@@ -25,27 +25,6 @@ class Player(Bot):
         self.base_sims_pre = 120
 
         self.cruise_mode = False
-
-        # NEW: mapping from pkrbot.handtype(...) to tier index and
-        #      Bayesian-style counts of villain showdowns per aggression bucket.
-        # Aggression buckets: 0 = small pot / low aggression,
-        #                     1 = medium,
-        #                     2 = big pot / high aggression.
-        self.tier_map = {
-            "High Card": 0,
-            "Pair": 1,
-            "Two Pair": 2,
-            "Trips": 3,
-            "Straight": 4,
-            "Flush": 5,
-            "Full House": 6,
-            "Quads": 7,
-            "Straight Flush": 8,
-        }
-        tier_count = len(self.tier_map)
-        # Dirichlet-style smoothing: start with 1 count for each tier in each bucket.
-        self.bucket_tier_counts = [[1] * tier_count for _ in range(3)]
-        self.bucket_tier_totals = [tier_count for _ in range(3)]
 
     def _get_board_cards(self, round_state):
         """
@@ -103,74 +82,7 @@ class Player(Bot):
         x = frac * street_boost
         return max(0.0, min(1.0, 1.4 * x))
 
-    # NEW: map pot size to a coarse aggression bucket, shared between MC and showdown updates.
-    def _aggr_bucket_from_pot(self, pot, starting_stack):
-        """
-        Buckets aggression based on final pot vs starting stack.
-        0 = small (limpy / low aggression), 1 = medium, 2 = big.
-        """
-        ratio = float(pot) / max(1.0, float(starting_stack))
-        if ratio < 0.25:
-            return 0
-        if ratio < 0.80:
-            return 1
-        return 2
-
-    # NEW: record villain's final hand tier in the bucket implied by final pot (only on showdowns).
-    def _update_range_from_showdown(self, prior_state, hero_index):
-        """
-        prior_state: RoundState at end of hand (before payouts).
-        hero_index: our seat index (0 or 1).
-        """
-        if not isinstance(prior_state, RoundState):
-            return
-
-        villain = 1 - hero_index
-        villain_hand = prior_state.hands[villain]
-        # If opponent cards aren't revealed (no showdown), nothing to learn.
-        if not villain_hand:
-            return
-
-        board_cards = self._get_board_cards(prior_state)
-        cards = [pkrbot.Card(c) for c in list(villain_hand) + board_cards]
-        val = pkrbot.evaluate(cards)
-        hclass = pkrbot.handtype(val)
-        if hclass not in self.tier_map:
-            return
-        tier_idx = self.tier_map[hclass]
-
-        pot = sum(STARTING_STACK - s for s in prior_state.stacks)
-        bucket = self._aggr_bucket_from_pot(pot, STARTING_STACK)
-
-        self.bucket_tier_counts[bucket][tier_idx] += 1
-        self.bucket_tier_totals[bucket] += 1
-
-    # NEW: return an acceptance probability for a simulated villain final hand
-    #      given its tier, current opp_bias, and the learned bucket priors.
-    def _tier_accept_prob(self, tier_idx, bucket, opp_bias):
-        """
-        tier_idx: 0..8 (High card..Straight Flush)
-        bucket: aggression bucket 0..2
-        opp_bias: continuous [0,1] from sizing/action
-        """
-        counts = self.bucket_tier_counts[bucket]
-        total = float(self.bucket_tier_totals[bucket])
-
-        # Empirical P(tier | bucket) with smoothing.
-        p_tier = counts[tier_idx] / max(1.0, total)
-
-        # Base acceptance ~50%–100% depending on how common this tier is.
-        base = 0.5 + 0.5 * p_tier  # 0.5..1.0
-
-        # Bias toward stronger tiers when opp_bias is high.
-        strength = tier_idx / 8.0  # 0..1
-        adj = 0.15 * opp_bias * (strength - 0.5)  # shift by +/-0.075 at full bias
-        acc = base + adj
-
-        # Clamp to a safe, non-zero range for rejection sampling.
-        return max(0.15, min(1.0, acc))
-
-    def mc_equity(self, round_state, my_hole_cards, sims, opp_bias=0.0, aggr_bucket=None):
+    def mc_equity(self, round_state, my_hole_cards, sims, opp_bias=0.0):
         board_cards = self._get_board_cards(round_state)
         board = [pkrbot.Card(c) for c in board_cards]
         hole = [pkrbot.Card(c) for c in my_hole_cards]
@@ -184,14 +96,14 @@ class Player(Bot):
             if c in deck.cards:
                 deck.cards.remove(c)
 
+        tier = {
+            "High Card": 0, "Pair": 1, "Two Pair": 2, "Trips": 3,
+            "Straight": 4, "Flush": 5, "Full House": 6, "Quads": 7, "Straight Flush": 8
+        }
+
         wins = 0
         ties = 0
         iters = 0
-
-        # Default bucket if not provided.
-        if aggr_bucket is None:
-            pot = sum(STARTING_STACK - s for s in round_state.stacks)
-            aggr_bucket = self._aggr_bucket_from_pot(pot, STARTING_STACK)
 
         while iters < sims:
             deck.shuffle()
@@ -202,10 +114,10 @@ class Player(Bot):
             my_val = pkrbot.evaluate(hole + board + runout)
             opp_val = pkrbot.evaluate(opp + board + runout)
 
-            if opp_bias > 0.0 or aggr_bucket is not None:
-                hclass = pkrbot.handtype(opp_val)
-                tier_idx = self.tier_map.get(hclass, 0)
-                accept_p = self._tier_accept_prob(tier_idx, aggr_bucket, opp_bias)
+            if opp_bias > 0:
+                opp_class = pkrbot.handtype(opp_val)
+                t = tier.get(opp_class, 0)
+                accept_p = min(1.0, max(0.18, 1.0 - 0.60 * opp_bias + 0.10 * t + 0.06 * opp_bias * t))
                 if random.random() > accept_p:
                     continue
 
@@ -222,21 +134,11 @@ class Player(Bot):
         hole = list(round_state.hands[active_player])
         sims = self._discard_sims(game_state.game_clock)
 
-        # Range bucket here is based on current pot at discard stage.
-        pot = sum(STARTING_STACK - s for s in round_state.stacks)
-        aggr_bucket = self._aggr_bucket_from_pot(pot, STARTING_STACK)
-
         best_i = 0
         best_ev = -1.0
         for i in range(3):
             kept = [hole[j] for j in range(3) if j != i]
-            ev = self.mc_equity(
-                round_state,
-                kept,
-                sims=sims,
-                opp_bias=0.0,
-                aggr_bucket=aggr_bucket,
-            )
+            ev = self.mc_equity(round_state, kept, sims=sims, opp_bias=0.0)
             if ev > best_ev:
                 best_ev = ev
                 best_i = i
@@ -261,14 +163,7 @@ class Player(Bot):
             return CheckAction() if CheckAction in legal else CallAction()
 
         sims = self._pre_sims(game_state.game_clock)
-        aggr_bucket = self._aggr_bucket_from_pot(pot, STARTING_STACK)
-        eq = self.mc_equity(
-            round_state,
-            hole,
-            sims=sims,
-            opp_bias=0.0,
-            aggr_bucket=aggr_bucket,
-        )
+        eq = self.mc_equity(round_state, hole, sims=sims, opp_bias=0.0)
 
         if continue_cost > 0:
             pot_odds = continue_cost / (pot + continue_cost)
@@ -304,14 +199,7 @@ class Player(Bot):
 
         sims = self._post_sims(street_n, game_state.game_clock)
         opp_bias = self._opp_bias_from_action(continue_cost, pot, street_n)
-        aggr_bucket = self._aggr_bucket_from_pot(pot, STARTING_STACK)
-        equity = self.mc_equity(
-            round_state,
-            hole,
-            sims=sims,
-            opp_bias=opp_bias,
-            aggr_bucket=aggr_bucket,
-        )
+        equity = self.mc_equity(round_state, hole, sims=sims, opp_bias=opp_bias)
 
         margin = (0.02 if street_n < 6 else 0.015) + (0.02 + 0.05 * opp_bias)
 
@@ -352,12 +240,6 @@ class Player(Bot):
 
     def handle_round_over(self, game_state, terminal_state, active_player):
         self.cruise_mode = self._should_cruise(game_state)
-
-        # NEW: feed showdown data into our range model.
-        if isinstance(terminal_state, TerminalState):
-            prior_state = terminal_state.previous_state
-            if isinstance(prior_state, RoundState):
-                self._update_range_from_showdown(prior_state, active_player)
 
     def get_action(self, game_state, round_state, active_player):
         legal = round_state.legal_actions()
