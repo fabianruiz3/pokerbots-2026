@@ -51,7 +51,11 @@ public class Runner {
                 code = "K";
                 break;
             }
-            default: {  // RAISE_ACTION_TYPE
+            case DISCARD_ACTION_TYPE: {
+                code = "D" + Integer.toString(action.card);
+                break;
+            }
+            default: { // RAISE_ACTION_TYPE
                 code = "R" + Integer.toString(action.amount);
                 break;
             }
@@ -60,13 +64,14 @@ public class Runner {
     }
 
     /**
-     * Reconstructs the game tree based on the action history received from the engine.
+     * Reconstructs the game tree based on the action history received from the
+     * engine.
      */
     public void run() throws IOException {
-        GameState gameState = new GameState(0, (float)0., 1);
+        GameState gameState = new GameState(0, (float) 0., 1);
         State roundState = new RoundState(0, 0, Arrays.asList(0, 0), Arrays.asList(0, 0),
-                                          Arrays.asList(Arrays.asList(""), Arrays.asList("")),
-                                          Arrays.asList(' ', ' '), Arrays.asList(""), null);
+                Arrays.asList(Arrays.asList(""), Arrays.asList("")),
+                Arrays.asList(""), null);
         int active = 0;
         boolean roundFlag = true;
         while (true) {
@@ -85,94 +90,80 @@ public class Runner {
                     case 'H': {
                         String[] cards = leftover.split(",");
                         List<List<String>> hands = new ArrayList<List<String>>(
-                            Arrays.asList(
-                                new ArrayList<String>(),
-                                new ArrayList<String>()
-                            )
-                        );
-                        hands.set(active, Arrays.asList(cards[0], cards[1]));
-                        hands.set(1 - active, Arrays.asList("", ""));
+                                Arrays.asList(
+                                        new ArrayList<String>(),
+                                        new ArrayList<String>()));
+                        hands.set(active, Arrays.asList(cards[0], cards[1], cards[2]));
+                        hands.set(1 - active, Collections.emptyList());
                         List<String> deck = new ArrayList<String>(Arrays.asList("", "", "", "", ""));
                         List<Integer> pips = Arrays.asList(State.SMALL_BLIND, State.BIG_BLIND);
                         List<Integer> stacks = Arrays.asList(State.STARTING_STACK - State.SMALL_BLIND,
-                                                             State.STARTING_STACK - State.BIG_BLIND);
-                        List<Character> bounties = Arrays.asList(' ', ' ');
-                        roundState = new RoundState(0, 0, pips, stacks, hands, bounties, deck, null);
-                        break;
-                    }
-                    case 'G': {
-                        List<Character> bounties = Arrays.asList(' ', ' ');
-                        bounties.set(active, leftover.charAt(0));
-                        RoundState maker = (RoundState)roundState;
-                        roundState = new RoundState(maker.button, maker.street, maker.pips, maker.stacks,
-                                                    maker.hands, bounties, maker.deck, maker.previousState);
+                                State.STARTING_STACK - State.BIG_BLIND);
+                        roundState = new RoundState(0, 0, pips, stacks, hands, deck, null);
                         if (roundFlag) {
-                            this.pokerbot.handleNewRound(gameState, (RoundState)roundState, active);
+                            this.pokerbot.handleNewRound(gameState, (RoundState) roundState, active);
                             roundFlag = false;
                         }
                         break;
                     }
                     case 'F': {
-                        roundState = ((RoundState)roundState).proceed(new Action(ActionType.FOLD_ACTION_TYPE));
+                        roundState = ((RoundState) roundState).proceed(new Action(ActionType.FOLD_ACTION_TYPE));
                         break;
                     }
                     case 'C': {
-                        roundState = ((RoundState)roundState).proceed(new Action(ActionType.CALL_ACTION_TYPE));
+                        roundState = ((RoundState) roundState).proceed(new Action(ActionType.CALL_ACTION_TYPE));
                         break;
                     }
                     case 'K': {
-                        roundState = ((RoundState)roundState).proceed(new Action(ActionType.CHECK_ACTION_TYPE));
+                        roundState = ((RoundState) roundState).proceed(new Action(ActionType.CHECK_ACTION_TYPE));
                         break;
                     }
                     case 'R': {
-                        roundState = ((RoundState)roundState).proceed(new Action(ActionType.RAISE_ACTION_TYPE,
-                                                                                 Integer.parseInt(leftover)));
+                        roundState = ((RoundState) roundState).proceed(new Action(ActionType.RAISE_ACTION_TYPE,
+                                Integer.parseInt(leftover)));
+                        break;
+                    }
+                    case 'D': {
+                        // Discard action in the round history
+                        roundState = ((RoundState) roundState).proceed(new Action(ActionType.DISCARD_ACTION_TYPE,
+                                0,
+                                Integer.parseInt(leftover)));
+                        break;
+                    }
+                    case 'A': {
+                        // Delta (bankroll change from the round)
+                        int delta = Integer.parseInt(leftover);
+                        List<Integer> deltas = new ArrayList<Integer>(Arrays.asList(-1 * delta, -1 * delta));
+                        deltas.set(active, delta);
+                        roundState = new TerminalState(deltas, ((TerminalState) roundState).previousState);
+                        this.pokerbot.handleRoundOver(gameState, (TerminalState) roundState, active);
+                        gameState = new GameState(gameState.bankroll + delta, gameState.gameClock,
+                                gameState.roundNum + 1);
+                        roundFlag = true;
                         break;
                     }
                     case 'B': {
                         String[] cards = leftover.split(",");
-                        List<String> revisedDeck = new ArrayList<String>(Arrays.asList("", "", "", "", ""));
+                        List<String> revisedDeck = new ArrayList<String>(Arrays.asList("", "", "", "", "", ""));
                         for (int i = 0; i < cards.length; i++) {
                             revisedDeck.set(i, cards[i]);
                         }
-                        RoundState maker = (RoundState)roundState;
+                        RoundState maker = (RoundState) roundState;
                         roundState = new RoundState(maker.button, maker.street, maker.pips, maker.stacks,
-                                                    maker.hands, maker.bounties, revisedDeck, maker.previousState);
+                                maker.hands, revisedDeck, maker.previousState);
                         break;
                     }
                     case 'O': {
                         // backtrack
                         String[] cards = leftover.split(",");
-                        roundState = ((TerminalState)roundState).previousState;
-                        RoundState maker = (RoundState)roundState;
+                        roundState = ((TerminalState) roundState).previousState;
+                        RoundState maker = (RoundState) roundState;
                         List<List<String>> revisedHands = new ArrayList<List<String>>(maker.hands);
                         revisedHands.set(1 - active, Arrays.asList(cards[0], cards[1]));
                         // rebuild history
                         roundState = new RoundState(maker.button, maker.street, maker.pips, maker.stacks,
-                                                    revisedHands, maker.bounties, maker.deck, maker.previousState);
-                        roundState = new TerminalState(Arrays.asList(0, 0), null, roundState);
-                        break;
-                    }
-                    case 'D': {
-                        int delta = Integer.parseInt(leftover);
-                        List<Integer> deltas = new ArrayList<Integer>(Arrays.asList(-1 * delta, -1 * delta));
-                        deltas.set(active, delta);
-                        roundState = new TerminalState(deltas, null, ((TerminalState)roundState).previousState);
-                        gameState = new GameState(gameState.bankroll + delta, gameState.gameClock, gameState.roundNum);
-                        break;
-                    }
-                    case 'Y': {
-                        List<Boolean> bounty_hits = Arrays.asList(leftover.charAt(0) == '1', leftover.charAt(1) == '1');
-                        if(active == 1)
-                        {
-                            boolean temp = bounty_hits.get(0);
-                            bounty_hits.set(0, bounty_hits.get(1));
-                            bounty_hits.set(1, temp);
-                        }
-                        roundState = new TerminalState(((TerminalState)roundState).deltas, bounty_hits, ((TerminalState)roundState).previousState);
-                        this.pokerbot.handleRoundOver(gameState, (TerminalState)roundState, active);
-                        gameState = new GameState(gameState.bankroll, gameState.gameClock, gameState.roundNum + 1);
-                        roundFlag = true;
+                                revisedHands, maker.deck, maker.previousState);
+                        roundState = new TerminalState(Arrays.asList(0, 0), roundState);
                         break;
                     }
                     case 'Q': {
@@ -183,10 +174,10 @@ public class Runner {
                     }
                 }
             }
-            if (roundFlag) {  // ack the engine
+            if (roundFlag || roundState instanceof TerminalState) { // ack the engine
                 this.send(new Action(ActionType.CHECK_ACTION_TYPE));
             } else {
-                Action action = this.pokerbot.getAction(gameState, (RoundState)roundState, active);
+                Action action = this.pokerbot.getAction(gameState, (RoundState) roundState, active);
                 this.send(action);
             }
         }

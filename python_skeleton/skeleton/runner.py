@@ -3,7 +3,7 @@ The infrastructure for interacting with the engine.
 '''
 import argparse
 import socket
-from .actions import FoldAction, CallAction, CheckAction, RaiseAction
+from .actions import FoldAction, CallAction, CheckAction, RaiseAction, DiscardAction
 from .states import GameState, TerminalState, RoundState
 from .states import STARTING_STACK, BIG_BLIND, SMALL_BLIND
 from .bot import Bot
@@ -38,6 +38,8 @@ class Runner():
             code = 'C'
         elif isinstance(action, CheckAction):
             code = 'K'
+        elif isinstance(action, DiscardAction):
+            code = 'D' + str(action.card)## action.card is the index of the action card in the player's hand
         else:  # isinstance(action, RaiseAction)
             code = 'R' + str(action.amount)
         self.socketfile.write(code + '\n')
@@ -63,12 +65,11 @@ class Runner():
                     hands[active] = clause[1:].split(',')
                     pips = [SMALL_BLIND, BIG_BLIND]
                     stacks = [STARTING_STACK - SMALL_BLIND, STARTING_STACK - BIG_BLIND]
-                    round_state = RoundState(0, 0, pips, stacks, hands, None, [], None)
+                    round_state = RoundState(0, 0, pips, stacks, hands, [], None)
                 elif clause[0] == 'G':
-                    bounties = ['-1', '-1']
-                    bounties[active] = clause[1:]
+                    # 'G' clause indicates game/round start - just update the round_state without changing values
                     round_state = RoundState(round_state.button, round_state.street, round_state.pips, round_state.stacks,
-                                             round_state.hands, bounties, round_state.deck, round_state.previous_state)
+                                             round_state.hands, round_state.board, round_state.previous_state)
                     if round_flag:
                         self.pokerbot.handle_new_round(game_state, round_state, active)
                         round_flag = False
@@ -78,11 +79,20 @@ class Runner():
                     round_state = round_state.proceed(CallAction())
                 elif clause[0] == 'K':
                     round_state = round_state.proceed(CheckAction())
+                elif clause[0] == 'D':
+                    if isinstance(round_state, RoundState):
+                        round_state = round_state.proceed(DiscardAction(int(clause[1:])))
+                    else:
+                        pass
                 elif clause[0] == 'R':
                     round_state = round_state.proceed(RaiseAction(int(float(clause[1:]))))
                 elif clause[0] == 'B':
+                    # 'B' clause contains the board cards for the current street
+                    # The street should already be correct from previous proceed() calls
+                    # Just update the board with the cards from the engine
+                    board_cards = clause[1:].split(',') if len(clause) > 1 else []
                     round_state = RoundState(round_state.button, round_state.street, round_state.pips, round_state.stacks,
-                                             round_state.hands, round_state.bounties, clause[1:].split(','), round_state.previous_state)
+                                             round_state.hands, board_cards, round_state.previous_state)
                 elif clause[0] == 'O':
                     # backtrack
                     round_state = round_state.previous_state
@@ -90,30 +100,23 @@ class Runner():
                     revised_hands[1-active] = clause[1:].split(',')
                     # rebuild history
                     round_state = RoundState(round_state.button, round_state.street, round_state.pips, round_state.stacks,
-                                             revised_hands, round_state.bounties, round_state.deck, round_state.previous_state)
-                    round_state = TerminalState([0, 0], None, round_state)
-                elif clause[0] == 'D':
+                                             revised_hands, round_state.board, round_state.previous_state)
+                    round_state = TerminalState([0, 0], round_state)
+                elif clause[0] == 'A':
                     assert isinstance(round_state, TerminalState)
                     delta = int(float(clause[1:]))
                     deltas = [-delta, -delta]
                     deltas[active] = delta
-                    round_state = TerminalState(deltas, None, round_state.previous_state)
-                    game_state = GameState(game_state.bankroll + delta, game_state.game_clock, game_state.round_num)
-                elif clause[0] == 'Y':
-                    assert isinstance(round_state, TerminalState)
-                    hero_hit_bounty, opponent_hit_bounty = (clause[1] == '1'), (clause[2] == '1')
-                    if active == 1:
-                        hero_hit_bounty, opponent_hit_bounty = opponent_hit_bounty, hero_hit_bounty
-                    round_state = TerminalState(round_state.deltas, [hero_hit_bounty, opponent_hit_bounty], round_state.previous_state)
+                    round_state = TerminalState(deltas, round_state.previous_state)
                     self.pokerbot.handle_round_over(game_state, round_state, active)
-                    game_state = GameState(game_state.bankroll, game_state.game_clock, game_state.round_num + 1)
+                    game_state = GameState(game_state.bankroll + delta, game_state.game_clock, game_state.round_num)
                     round_flag = True
                 elif clause[0] == 'Q':
                     return
-            if round_flag:  # ack the engine
+            if round_flag or isinstance(round_state, TerminalState):  # ack the engine
                 self.send(CheckAction())
             else:
-                assert active == round_state.button % 2
+                ##assert active == round_state.button % 2
                 action = self.pokerbot.get_action(game_state, round_state, active)
                 self.send(action)
 

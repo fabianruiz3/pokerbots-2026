@@ -20,12 +20,11 @@ public class RoundState extends State {
     public final List<Integer> pips;
     public final List<Integer> stacks;
     public final List<List<String>> hands;
-    public final List<Character> bounties;
     public final List<String> deck;
     public final State previousState;
 
     public RoundState(int button, int street, List<Integer> pips, List<Integer> stacks,
-                      List<List<String>> hands, List<Character> bounties, List<String> deck,
+                      List<List<String>> hands, List<String> deck,
                       State previousState) {
         this.button = button;
         this.street = street;
@@ -37,55 +36,15 @@ public class RoundState extends State {
                 Collections.unmodifiableList(hands.get(1))
             )
         );
-        this.bounties = Collections.unmodifiableList(bounties);
         this.deck = Collections.unmodifiableList(deck);
         this.previousState = previousState;
-    }
-
-    /**
-     * Gets player bounty hits (described inside function) 
-     */
-    List<Boolean> get_bounty_hits()
-    {
-        /*
-        Determines if each player hit their bounty card during the round.
-
-        A bounty is hit if the player's bounty card rank appears in either:
-        - Their hole cards
-        - The community cards dealt so far
-
-        Returns:
-            List<Boolean>: A list containing two booleans where:
-                - First boolean indicates if Player 1's bounty was hit
-                - Second boolean indicates if Player 2's bounty was hit
-        */
-        List<Character> cards0 = new ArrayList<Character>(), cards1 = new ArrayList<Character>();
-        try
-        {
-            for(int i = 0; i < 2; i ++)
-                cards0.add(this.hands.get(0).get(i).charAt(0));
-        }
-        catch(Exception e) {}
-        try
-        {
-            for(int i = 0; i < 2; i ++)
-                cards1.add(this.hands.get(1).get(i).charAt(0));
-        }
-        catch(Exception e) {}
-        for(int i = 0; i < this.street; i ++)
-        {
-            cards0.add(this.deck.get(i).charAt(0));
-            cards1.add(this.deck.get(i).charAt(0));
-        }
-        List<Boolean> bounty_hits = Arrays.asList(cards0.contains(this.bounties.get(0)), cards1.contains(this.bounties.get(1)));
-        return bounty_hits;
     }
 
     /**
      * Compares the players' hands and computes payoffs.
      */
     public State showdown() {
-        return new TerminalState(Arrays.asList(0, 0), Arrays.asList(false, false), this);
+        return new TerminalState(Arrays.asList(0, 0), this);
     }
 
     /**
@@ -93,6 +52,12 @@ public class RoundState extends State {
      */
     public Set<ActionType> legalActions() {
         int active = this.button % 2;
+        if (this.street == 2 || this.street == 3) {
+            // Only the player matching street % 2 can discard, the other can only check
+            return active != (this.street % 2)
+                ? new HashSet<ActionType>(Arrays.asList(ActionType.DISCARD_ACTION_TYPE))
+                : new HashSet<ActionType>(Arrays.asList(ActionType.CHECK_ACTION_TYPE));
+        }
         int continueCost = this.pips.get(1-active) - this.pips.get(active);
         if (continueCost == 0) {
             // we can only raise the stakes if both players can afford it
@@ -128,16 +93,22 @@ public class RoundState extends State {
      * Resets the players' pips and advances the game tree to the next round of betting.
      */
     public State proceedStreet() {
-        if (this.street == 5) {
+        if (this.street == 6) {
             return this.showdown();
         }
         int newStreet;
+        int newButton;
         if (this.street == 0) {
+            newStreet = 2;
+            newButton = 1;  // Player B discards first, since they are out of position
+        } else if(this.street == 2) {
             newStreet = 3;
+            newButton = 0;  // Player A discards second
         } else {
             newStreet = this.street + 1;
+            newButton = 1;  // Player B acts first after the discard phase
         }
-        return new RoundState(1, newStreet, Arrays.asList(0, 0), this.stacks, this.hands, this.bounties, this.deck, this);
+        return new RoundState(newButton, newStreet, Arrays.asList(0, 0), this.stacks, this.hands, this.deck, this);
     }
 
     /**
@@ -146,6 +117,21 @@ public class RoundState extends State {
     public State proceed(Action action) {
         int active = this.button % 2;
         switch (action.actionType) {
+            case DISCARD_ACTION_TYPE: {
+                List<String> newDeck = new ArrayList<String>(this.deck);
+                List<List<String>> newHands = new ArrayList<List<String>>(
+                    Arrays.asList(
+                        new ArrayList<String>(this.hands.get(0)),
+                        new ArrayList<String>(this.hands.get(1))
+                    )
+                );
+                if (newHands.get(active).size() != 0) {
+                    String newCard = newHands.get(active).get(action.card);
+                    newDeck.add(newCard);
+                    newHands.get(active).remove(action.card);
+                }
+                return new RoundState((1 - active) % 2, this.street, this.pips, this.stacks, newHands, newDeck, this);
+            }
             case FOLD_ACTION_TYPE: {
                 int delta;
                 if (active == 0) {
@@ -153,14 +139,14 @@ public class RoundState extends State {
                 } else {
                     delta = State.STARTING_STACK - this.stacks.get(1);
                 }
-                return new TerminalState(Arrays.asList(delta, -1 * delta), this.get_bounty_hits(), this);
+                return new TerminalState(Arrays.asList(delta, -1 * delta), this);
             }
             case CALL_ACTION_TYPE: {
                 if (this.button == 0) {  // sb calls bb
                     return new RoundState(1, 0, Arrays.asList(State.BIG_BLIND, State.BIG_BLIND),
                                           Arrays.asList(State.STARTING_STACK - State.BIG_BLIND,
                                                         State.STARTING_STACK - State.BIG_BLIND),
-                                          this.hands, this.bounties, this.deck, this);
+                                          this.hands, this.deck, this);
                 }
                 // both players acted
                 List<Integer> newPips = new ArrayList<Integer>(this.pips);
@@ -169,15 +155,15 @@ public class RoundState extends State {
                 newStacks.set(active, newStacks.get(active) - contribution);
                 newPips.set(active, newPips.get(active) + contribution);
                 RoundState state = new RoundState(this.button + 1, this.street, newPips, newStacks,
-                                                  this.hands, this.bounties, this.deck, this);
+                                                  this.hands, this.deck, this);
                 return state.proceedStreet();
             }
             case CHECK_ACTION_TYPE: {
-                if (((this.street == 0) & (this.button > 0)) | (this.button > 1)) {  // both players acted
+                if (((this.street == 0) & (this.button > 0)) | (this.button > 1) | (this.street == 2) | (this.street == 3)) {
                     return this.proceedStreet();
                 }
                 // let opponent act
-                return new RoundState(this.button + 1, this.street, this.pips, this.stacks, this.hands, this.bounties, this.deck, this);
+                return new RoundState(this.button + 1, this.street, this.pips, this.stacks, this.hands, this.deck, this);
             }
             default: {  // RAISE_ACTION_TYPE
                 List<Integer> newPips = new ArrayList<Integer>(this.pips);
@@ -185,7 +171,7 @@ public class RoundState extends State {
                 int contribution = action.amount - newPips.get(active);
                 newStacks.set(active, newStacks.get(active) - contribution);
                 newPips.set(active, newPips.get(active) + contribution);
-                return new RoundState(this.button + 1, this.street, newPips, newStacks, this.hands, this.bounties, this.deck, this);
+                return new RoundState(this.button + 1, this.street, newPips, newStacks, this.hands, this.deck, this);
             }
         }
     }

@@ -2,7 +2,7 @@
 Simple example pokerbot, written in Python.
 """
 
-from skeleton.actions import CallAction, CheckAction, FoldAction, RaiseAction
+from skeleton.actions import CallAction, CheckAction, FoldAction, RaiseAction, DiscardAction
 from skeleton.bot import Bot
 from skeleton.runner import parse_args, run_bot
 from skeleton.states import (
@@ -36,31 +36,34 @@ ROLE = "You are an expert Poker player who is also good at playing different var
 
 GAME_RULES = """
 I want you to play a variant of Poker with me.
-How the variant goes is that it is very similar to Texas Hold'em with 2 players,
-except that you are given a bounty rank which is either a number from 2-9, or T for a Ten,
-J for a Jack, Q for a Queen, or K for a King. Each round you and your opponent are made
-aware of your current individual bounty ranks, and they are not shared with each other at any point.
-The variant is that if you win a round and your bounty card was dealt at any point (either to you or
-your opponent's hole cards, or as a community card), then you win 50% more, and your opponent loses
-that much more during payout. Whenever it is your action, I will give you information about your current
-cards, the current cards on deck, your remaining stack, your contribution to the pot, and the legal
-actions you can take (Raise, Fold, Call, Check, Bid. The cards will be formated as 'ab', where b is the
-suite (h = heart, d = diamond, s = spade, c = club), and a is the type (can be numbers from 2-9, or T (10),
-J (jack), Q (Queen), K (King)). The starting stack for a round is 400, with the small blind being 1 and big
-blind equal 2. I want you to format your response as the following: If you want to Fold, Call or Check,
-then just respond as Fold, Call or Check respectively (1 word). If you want to Raise or Bid, format
-your response as 'Raise x' or 'Bid x' respectively, where x is an integer. For example, if Call is a
-legal action and you want to call, then respond with 'Call'. If Raise is in legal action and you want
-to raise by 10, then respond 'Raise 10'. We can play one round and see how it goes
+This is a 2-player variant similar to Texas Hold'em, but with key differences:
+1. Each player is dealt 3 hole cards instead of 2.
+2. The flop starts with only 2 community cards.
+3. After the flop betting, players take turns discarding one card from their hand into the community cards.
+   First player A discards (making it 3 community cards), then player B discards (making it 4 community cards).
+4. After both discards, the turn is dealt (5 community cards total).
+5. Then the river is dealt (6 community cards total).
+6. At showdown, players use their remaining 2 hole cards and the 6 community cards to make the best 5-card hand.
+
+The cards will be formatted as 'ab', where b is the suit (h = heart, d = diamond, s = spade, c = club),
+and a is the rank (can be numbers from 2-9, or T (10), J (jack), Q (Queen), K (King), A (Ace)).
+The starting stack for a round is 400, with the small blind being 1 and big blind equal 2.
+
+Format your response as follows:
+- To Fold, Call, or Check: just respond with that single word.
+- To Raise: respond 'Raise x' where x is the total amount you want to raise to.
+- To Discard: respond 'Discard x' where x is 0, 1, or 2 indicating which card from your hand to discard.
+
+For example, if you want to call, respond with 'Call'. If you want to raise to 10, respond 'Raise 10'.
+If you want to discard your second card (index 1), respond 'Discard 1'.
 """.replace(
     "\n", " "
 ).strip()
 
 ASSISTANT_AGREES = """
 Of course, let's play this variant of Poker. Please provide me with the current game scenario,
-including my hole cards, the visible community cards on the flop, my chip stack, my current
-contribution to the pot, and the legal actions available to me. Additionally, if relevant at this
-stage, please inform me of my bounty rank so I can respond accordingly."
+including my hole cards, the visible community cards, my chip stack, my current
+contribution to the pot, and the legal actions available to me.
 """.replace(
     "\n", " "
 ).strip()
@@ -88,7 +91,6 @@ class Player(Bot):
         ]
         self.new_message = ""
         self.is_gpt = False
-        self.curr_bounty = None
 
     def handle_new_round(self, game_state, round_state, active):
         """
@@ -102,31 +104,16 @@ class Player(Bot):
         Returns:
         Nothing.
         """
-        # my_bankroll = game_state.bankroll  # the total number of chips you've gained or lost from the beginning of the game to the start of this round
         game_clock = (
             game_state.game_clock
         )  # the total number of seconds your bot has left to play this game
 
-        # round_num = game_state.round_num  # the round number from 1 to NUM_ROUNDS
-        # my_cards = round_state.hands[active]  # your cards
         big_blind = bool(active)  # True if you are the big blind
         print(
             "================================NEW ROUND==================================="
         )
         print("You are", "big blind!" if big_blind else "small blind!")
-        self.new_message = "You are " + "big blind!" if big_blind else "small blind!"
-
-        if self.curr_bounty != round_state.bounties[active]:
-            self.curr_bounty = round_state.bounties[active]
-            print("Your new bounty rank is " + str(self.curr_bounty) + ".")
-            self.new_message += (
-                " Your new bounty rank is " + str(self.curr_bounty) + "."
-            )
-        else:
-            print("Your bounty rank is still " + str(self.curr_bounty) + ".")
-            self.new_message += (
-                " Your new bounty rank is " + str(self.curr_bounty) + "."
-            )
+        self.new_message = "You are " + ("big blind!" if big_blind else "small blind!")
 
     def handle_round_over(self, game_state, terminal_state, active):
         """
@@ -142,8 +129,6 @@ class Player(Bot):
         """
         my_delta = terminal_state.deltas[active]  # your bankroll change from this round
         previous_state = terminal_state.previous_state  # RoundState before payoffs
-        # street = previous_state.street  # 0, 3, 4, or 5 representing when this round ended
-        # my_cards = previous_state.hands[active]  # your cards
         opp_cards = previous_state.hands[
             1 - active
         ]  # opponent's cards or [] if not revealed
@@ -154,18 +139,9 @@ class Player(Bot):
 
         print("This round, your bankroll changed by", str(my_delta) + "!")
 
-        if terminal_state.bounty_hits[1 - active]:
-            print("Unfortunately, your opponent's bounty hit this round.")
-        if terminal_state.bounty_hits[active]:
-            print("Your bounty hit this round!")
         self.new_message += (
             " This round, your bankroll changed by "
             + str(my_delta)
-            + (
-                "Unfortunately, your opponent's bounty hit this round."
-                if terminal_state.bounty_hits[1 - active]
-                else ""
-            )
             + "! Onto the next round - Say yes to continue."
         )
         print()
@@ -196,11 +172,9 @@ class Player(Bot):
         legal_actions = (
             round_state.legal_actions()
         )  # the actions you are allowed to take
-        street = (
-            round_state.street
-        )  # 0, 3, 4, or 5 representing pre-flop, flop, turn, or river respectively
+        street = round_state.street
         my_cards = round_state.hands[active]  # your cards
-        board_cards = round_state.deck[:street]  # the board cards
+        board_cards = round_state.board  # the board cards
         my_pip = round_state.pips[
             active
         ]  # the number of chips you have contributed to the pot this round of betting
@@ -211,7 +185,6 @@ class Player(Bot):
         opp_stack = round_state.stacks[
             1 - active
         ]  # the number of chips your opponent has remaining
-        my_bounty = round_state.bounties[active]  # What is your bounty rank?
         continue_cost = (
             opp_pip - my_pip
         )  # the number of chips needed to stay in the pot
@@ -222,17 +195,29 @@ class Player(Bot):
             STARTING_STACK - opp_stack
         )  # the number of chips your opponent has contributed to the pot
 
+        # Street description for display
+        street_names = {
+            0: "Pre-flop",
+            2: "Flop (Discard Phase)",
+            3: "Flop (Discard Phase)",
+            4: "Post-Discard",
+            5: "Turn",
+            6: "River",
+        }
+        current_street = street_names.get(street, f"Street {street}")
+
         print()
+        print(f"=== {current_street} ===")
         print("Your current cards are:", ", ".join(my_cards))
         self.new_message += " Your current cards are: " + ", ".join(my_cards) + "."
         if board_cards:
-            print("The visible community cards are:", ", ".join(board_cards))
+            print("The community cards are:", ", ".join(board_cards))
             self.new_message += (
-                " The visible community cards are: " + ", ".join(board_cards) + "."
+                " The community cards are: " + ", ".join(board_cards) + "."
             )
         else:
-            print("There are no visible community cards.")
-            self.new_message += " There are no visible community cards."
+            print("There are no community cards yet.")
+            self.new_message += " There are no community cards yet."
 
         print("Your current contribution to the pot is", my_contribution)
         self.new_message += (
@@ -247,6 +232,8 @@ class Player(Bot):
 
         poss_actions = "Your legal actions are: "
 
+        if DiscardAction in legal_actions:
+            poss_actions += "Discard, "
         if RaiseAction in legal_actions:
             poss_actions += "Raise, "
         if FoldAction in legal_actions:
@@ -264,6 +251,12 @@ class Player(Bot):
             )  # the smallest and largest numbers of chips for a legal bet/raise
             min_cost = min_raise - my_pip  # the cost of a minimum bet/raise
             max_cost = max_raise - my_pip  # the cost of a maximum bet/raise
+            print(f"Raise bounds: {min_raise} to {max_raise}")
+
+        if DiscardAction in legal_actions:
+            print("You must discard one card. Cards are indexed 0, 1, 2.")
+            for i, card in enumerate(my_cards):
+                print(f"  {i}: {card}")
 
         if self.is_gpt:
             self.messages.append({"role": "user", "content": self.new_message})
@@ -281,39 +274,43 @@ class Player(Bot):
                 exit()
             self.new_message = ""
         else:
-            active = input("Enter your move:\n")
+            user_input = input("Enter your move:\n")
             act = None
+            num = None
             while act is None:
-                active = active.split(" ")
-                if active[0] in ["Quit", "quit", "q"]:
+                parts = user_input.split(" ")
+                if parts[0] in ["Quit", "quit", "q"]:
                     exit()
-                if len(active) != 1 and len(active) != 2:
-                    active = input("Too many words. Re-enter move: \n")
-                elif len(active) == 1:
-                    act = active[0].capitalize()
+                if len(parts) != 1 and len(parts) != 2:
+                    user_input = input("Too many words. Re-enter move: \n")
+                elif len(parts) == 1:
+                    act = parts[0].capitalize()
                     if act not in ["Check", "Fold", "Call"]:
                         act = None
-                        active = input(
+                        user_input = input(
                             "One-word moves are only Check, Fold and Call. Re-enter move: \n"
                         )
                 else:
-                    act, num = active
+                    act, num = parts
                     act = act.capitalize()
-                    if act != "Raise":
+                    if act not in ["Raise", "Discard"]:
                         act = None
-                        active = input(
-                            "Raise is the only 2-word move. Re-enter move: \n"
+                        user_input = input(
+                            "Two-word moves are only Raise and Discard. Re-enter move: \n"
                         )
-                    try:
-                        num = int(num)
-                    except:
-                        act = None
-                        active = input(
-                            "Integer not entered for Raising. Enter new move: \n"
-                        )
+                    else:
+                        try:
+                            num = int(num)
+                        except ValueError:
+                            act = None
+                            user_input = input(
+                                "Integer not entered for Raise/Discard. Enter new move: \n"
+                            )
 
         if act == "Raise":
             return RaiseAction(num)
+        elif act == "Discard":
+            return DiscardAction(num)
         elif act == "Check":
             return CheckAction()
         elif act == "Call":
