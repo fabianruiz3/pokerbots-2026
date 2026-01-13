@@ -12,8 +12,6 @@ from skeleton.states import NUM_ROUNDS, STARTING_STACK
 from skeleton.bot import Bot
 from skeleton.runner import parse_args, run_bot
 
-import os
-
 import random
 import pkrbot
 
@@ -23,9 +21,9 @@ FINAL_BOARD_CARDS = 6
 class Player(Bot):
     def __init__(self):
         # Monte Carlo base simulation counts
-        self.base_sims_post = 1200
-        self.base_sims_discard = 800
-        self.base_sims_pre = 900
+        self.base_sims_post = 500
+        self.base_sims_discard = 500
+        self.base_sims_pre = 500  # Only used if table fails to load
 
         self.cruise_mode = False
 
@@ -63,6 +61,35 @@ class Player(Bot):
         safety = 2 * remaining
         return bankroll >= safety
 
+
+    def _clock_mult(self, game_clock):
+        """
+        IMPROVED clock multiplier - never drops below 50%.
+        """
+        if game_clock < 12.0:
+            return 0.50
+        elif game_clock < 20.0:
+            return 0.65
+        elif game_clock < 30.0:
+            return 0.8
+        elif game_clock < 45.0:
+            return 0.90
+        else:
+            return 1.0
+
+    def _post_sims(self, street_n, game_clock):
+        mult = self._clock_mult(game_clock)
+        base = self.base_sims_post
+        s = int(base * mult)
+        return s
+
+    def _discard_sims(self, game_clock):
+        s = int(self.base_sims_discard * self._clock_mult(game_clock))
+        return s
+
+    def _pre_sims(self, game_clock):
+        s = int(self.base_sims_pre * self._clock_mult(game_clock))
+        return s
 
     def _opp_bias_from_action(self, continue_cost, pot, street_n):
         if continue_cost <= 0:
@@ -148,7 +175,7 @@ class Player(Bot):
 
     def choose_discard_mc(self, game_state, round_state, active_player):
         hole = list(round_state.hands[active_player])
-        sims = self.base_sims_discard
+        sims = self._discard_sims(game_state.game_clock)
 
         best_i = 0
         best_ev = -1.0
@@ -159,6 +186,7 @@ class Player(Bot):
                 best_ev = ev
                 best_i = i
         return best_i
+
     # ---------- Preflop ----------
 
     def preflop_action(self, game_state, round_state, active_player):
@@ -174,36 +202,27 @@ class Player(Bot):
 
         hole = list(round_state.hands[active_player])
 
+        # Panic: ultra-simple nit mode when clock is almost dead.
 
-        sims = self.base_sims_pre
+        sims = self._pre_sims(game_state.game_clock)
         eq = self.mc_equity(round_state, hole, sims=sims, opp_bias=0.0)
 
         # Facing a raise / completion
         if continue_cost > 0:
             pot_odds = continue_cost / (pot + continue_cost)
-            if eq < pot_odds + 0.045:
+            if eq < pot_odds + 0.03:
                 return FoldAction() if FoldAction in legal else CallAction()
             return CallAction() if CallAction in legal else CheckAction()
 
         # No raise yet: open-raise strong 3-card holdings
-        if RaiseAction in legal and eq >= 0.85:
+        if RaiseAction in legal and eq >= 0.60:
             mn, mx = round_state.raise_bounds()
-            target = int(max(mn, min(mx, 4 * pot)))
+            target = int(max(mn, min(mx, 2.2 * pot)))
             return RaiseAction(target)
-        elif RaiseAction in legal and eq >= 0.65:
-            if my_pip == 2:
-                print("BB: Preflop 3-bet with eq", eq, hole)
-            mn, mx = round_state.raise_bounds()
-            target = int(max(mn, min(mx, 2.25 * pot)))
-            return RaiseAction(target)
-        
-        elif CallAction in legal and eq >= 0.55:
-            return CallAction()
-        
-        elif CheckAction in legal and eq >= 0.55:
-            return CheckAction()
 
-        return FoldAction() if FoldAction in legal else CheckAction()
+        return CheckAction() if CheckAction in legal else CallAction()
+
+    # ---------- Postflop ----------
 
     def postflop_action(self, game_state, round_state, active_player):
         legal = round_state.legal_actions()
@@ -219,8 +238,7 @@ class Player(Bot):
 
         hole = list(round_state.hands[active_player])
 
-
-        sims = self.base_sims_post
+        sims = self._post_sims(street_n, game_state.game_clock)
         opp_bias = self._opp_bias_from_action(continue_cost, pot, street_n)
         equity = self.mc_equity(round_state, hole, sims=sims, opp_bias=opp_bias)
 
@@ -275,7 +293,6 @@ class Player(Bot):
     def handle_round_over(self, game_state, terminal_state, active_player):
         # Update cruise mode based on overall bankroll / remaining rounds.
         self.cruise_mode = self._should_cruise(game_state)
-        # print(game_state.game_clock)
 
     def get_action(self, game_state, round_state, active_player):
         legal = round_state.legal_actions()
