@@ -594,11 +594,12 @@ class Game():
             winner = None  # tie
 
         # optionally write a full log for this single game
-        if write_full_log:
+        if write_full_log and winner is None:
             name = GAME_LOG_FILENAME + '.txt'
             print('Writing', name)
             with open(name, 'w') as log_file:
                 log_file.write('\n'.join(self.log) + '\n')
+            print('Game ended in a tie!!!!!!!')
 
         return winner, p1.game_clock, p2.game_clock
 
@@ -606,7 +607,7 @@ class Game():
 if __name__ == '__main__':
     RESULTS_FILE = GAME_LOG_FILENAME + '_summary.txt'
 
-    N_GAMES = 30
+    N_GAMES = 1
 
     wins = {
         PLAYER_1_NAME: 0,
@@ -621,7 +622,7 @@ if __name__ == '__main__':
     for i in range(1, N_GAMES + 1):
         print(f'=== Game {i} / {N_GAMES} ===')
         game = Game()
-        winner, p1_clock, p2_clock = game.run(write_full_log=False, game_index=i)
+        winner, p1_clock, p2_clock = game.run(write_full_log=True, game_index=i)
 
         if winner is None:
             wins['ties'] += 1
