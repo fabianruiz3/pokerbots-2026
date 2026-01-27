@@ -34,7 +34,7 @@ void GameState::reset(std::mt19937& rng) {
   deck_idx = 0;
 
   board_size = 0;
-  street = tossem_abs::STREET_PREFLOP;
+  street = tossem_abs::STREET_PREFLOP;  // Street 0
   pips = {SMALL_BLIND, BIG_BLIND};
   stacks = {STARTING_STACK - SMALL_BLIND, STARTING_STACK - BIG_BLIND};
   current_player = 0;
@@ -59,6 +59,8 @@ int GameState::effective_stack() const {
 }
 
 bool GameState::is_discard_phase() const {
+  // Street 2: BB discards
+  // Street 3: SB discards
   if (street == tossem_abs::STREET_BB_DISCARD && !bb_discarded) return true;
   if (street == tossem_abs::STREET_SB_DISCARD && !sb_discarded) return true;
   return false;
@@ -105,19 +107,23 @@ void GameState::advance_street() {
   street_history.clear();
 
   if (street == tossem_abs::STREET_PREFLOP) {
-    // deal 2-card flop
+    // Deal 2-card flop, go to street 2 (BB_DISCARD)
+    // We skip street 1 (FLOP_DEAL) since it has no actions
     board[0] = deck[deck_idx];
     board[1] = deck[deck_idx+1];
     board_size = 2;
     deck_idx += 2;
-    street = tossem_abs::STREET_FLOP;
-    current_player = 1; // BB acts first postflop
-  } else if (street == tossem_abs::STREET_FLOP) {
-    street = tossem_abs::STREET_BB_DISCARD;
-    current_player = 1; // BB discards
-  } else if (street == tossem_abs::STREET_TURN) {
+    street = tossem_abs::STREET_BB_DISCARD;  // Street 2
+    current_player = 1; // BB discards first
+  } else if (street == tossem_abs::STREET_FLOP_BET) {
+    // After flop betting, deal turn card
     board[board_size++] = deck[deck_idx++];
-    street = tossem_abs::STREET_RIVER;
+    street = tossem_abs::STREET_TURN;  // Street 5
+    current_player = 1;
+  } else if (street == tossem_abs::STREET_TURN) {
+    // After turn betting, deal river card
+    board[board_size++] = deck[deck_idx++];
+    street = tossem_abs::STREET_RIVER;  // Street 6
     current_player = 1;
   } else if (street == tossem_abs::STREET_RIVER) {
     showdown();
@@ -127,6 +133,7 @@ void GameState::advance_street() {
 void GameState::apply_discard(int discard_idx) {
   // discard_idx 0..2
   if (street == tossem_abs::STREET_BB_DISCARD) {
+    // BB (player 1) discards
     int p = 1;
     uint8_t card = hands[p][discard_idx];
     // remove from hand by swapping with last
@@ -136,9 +143,10 @@ void GameState::apply_discard(int discard_idx) {
 
     board[board_size++] = card;
     bb_discarded = true;
-    street = tossem_abs::STREET_SB_DISCARD;
-    current_player = 0;
+    street = tossem_abs::STREET_SB_DISCARD;  // Street 3
+    current_player = 0;  // SB discards next
   } else {
+    // SB (player 0) discards
     int p = 0;
     uint8_t card = hands[p][discard_idx];
     int hs = hand_sizes[p];
@@ -148,10 +156,10 @@ void GameState::apply_discard(int discard_idx) {
     board[board_size++] = card;
     sb_discarded = true;
 
-    // deal turn immediately (board 4->5)
+    // Deal turn card immediately, then go to flop betting
     board[board_size++] = deck[deck_idx++];
-    street = tossem_abs::STREET_TURN;
-    current_player = 1;
+    street = tossem_abs::STREET_FLOP_BET;  // Street 4
+    current_player = 1;  // BB acts first in flop betting
     pips = {0,0};
     street_history.clear();
   }
@@ -160,7 +168,7 @@ void GameState::apply_discard(int discard_idx) {
 void GameState::showdown() {
   is_terminal = true;
 
-  // each has 2 hole + 6 board = 8 cards (we enforce hand_sizes==2 here)
+  // each has 2 hole + 6 board = 8 cards
   std::vector<uint8_t> cards0;
   std::vector<uint8_t> cards1;
   cards0.reserve(8);

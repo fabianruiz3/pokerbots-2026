@@ -1,5 +1,5 @@
 Game #1: winner = B
-Time left p1, p2 0.0 | 59.78069291659631
+Time left p1, p2 52.10999200493097 | 51.874710463918746
 
 Total games: 1
 A wins: 0

@@ -446,11 +446,28 @@ class Game():
     def __init__(self):
         self.log = ['6.9630 MIT Pokerbots - ' + PLAYER_1_NAME + ' vs ' + PLAYER_2_NAME]
         self.player_messages = [[], []]
+        self.preflop_bets = {PLAYER_1_NAME: 0, PLAYER_2_NAME: 0}
+        self.flop_bets = {PLAYER_1_NAME: 0, PLAYER_2_NAME: 0}
+        self.turn_bets = {PLAYER_1_NAME: 0, PLAYER_2_NAME: 0}
+        self.ev_preflop_bets = {PLAYER_1_NAME: 0, PLAYER_2_NAME: 0}
+        self.ev_flop_bets = {PLAYER_1_NAME: 0, PLAYER_2_NAME: 0}
+        self.ev_turn_bets = {PLAYER_1_NAME: 0, PLAYER_2_NAME: 0}
 
     def log_round_state(self, players, round_state):
         '''
         Incorporates RoundState information into the game log and player messages.
         '''
+        if round_state.street == 0:
+            self.preflop_bets = {players[0].name: STARTING_STACK-round_state.stacks[0],
+                                     players[1].name: STARTING_STACK-round_state.stacks[1]}
+        elif round_state.street == 4:
+            self.flop_bets = {players[0].name: STARTING_STACK-round_state.stacks[0]-self.preflop_bets[players[0].name],
+                                players[1].name: STARTING_STACK-round_state.stacks[1]-self.preflop_bets[players[1].name]}
+        else:
+            self.turn_bets = {players[0].name: STARTING_STACK-round_state.stacks[0]-self.flop_bets[players[0].name]-self.preflop_bets[players[0].name],
+                                players[1].name: STARTING_STACK-round_state.stacks[1]-self.flop_bets[players[1].name]-self.preflop_bets[players[1].name]}
+            
+        
         if round_state.street == 0 and round_state.button == 0:
             self.log.append('{} posts the blind of {}'.format(players[0].name, SMALL_BLIND))
             self.log.append('{} posts the blind of {}'.format(players[1].name, BIG_BLIND))
@@ -463,6 +480,7 @@ class Game():
             self.log.append(STREET_NAMES[round_state.street - 2] + ' ' + PCARDS(board) +
                             PVALUE(players[0].name, STARTING_STACK-round_state.stacks[0]) +
                             PVALUE(players[1].name, STARTING_STACK-round_state.stacks[1]))
+            self.log.append(f"Current stacks: {round_state.stacks[0]}, {round_state.stacks[1]}")
             compressed_board = 'B' + CCARDS(board)
             self.player_messages[0].append(compressed_board)
             self.player_messages[1].append(compressed_board)
@@ -525,20 +543,24 @@ class Game():
             self.log_action(player.name, action, bet_override, round_state.hands[active])
             round_state = round_state.proceed(action)
         self.log_terminal_state(players, round_state)
+        for i in range(len(players)):
+            multiplier = 1 if round_state.deltas[i] > 0 else (0 if round_state.deltas[i] == 0 else -1)
+            self.ev_preflop_bets[players[i].name] += multiplier * self.preflop_bets[players[i].name]
+            self.ev_flop_bets[players[i].name] += multiplier * self.flop_bets[players[i].name]
+            self.ev_turn_bets[players[i].name] += multiplier * self.turn_bets[players[i].name]
         for player, player_message, delta in zip(players, self.player_messages, round_state.deltas):
             player.query(round_state, player_message, self.log)
             player.bankroll += delta
 
-    def run(self, write_full_log=True, game_index=None):
+    def run(self):
         '''
-        Runs one game of poker (NUM_ROUNDS hands).
-
-        Returns:
-            winner_name (str or None):
-                PLAYER_1_NAME if player 1 wins,
-                PLAYER_2_NAME if player 2 wins,
-                None for tie.
+        Runs one game of poker.
         '''
+        print('   __  _____________  ___       __           __        __    ')
+        print('  /  |/  /  _/_  __/ / _ \\___  / /_____ ____/ /  ___  / /____')
+        print(' / /|_/ // /  / /   / ___/ _ \\/  \'_/ -_) __/ _ \\/ _ \\/ __(_-<')
+        print('/_/  /_/___/ /_/   /_/   \\___/_/\\_\\\\__/_/ /_.__/\\___/\\__/___/')
+        print()
         print('Starting the Pokerbots engine...')
         players = [
             Player(PLAYER_1_NAME, PLAYER_1_PATH),
@@ -549,99 +571,87 @@ class Game():
             player.build()
         for player in players:
             player.run()
-
         for round_num in range(1, NUM_ROUNDS + 1):
             self.log.append('')
             self.log.append('Round #' + str(round_num) + STATUS(players))
             self.run_round(players)
-            # swap positions (button) each hand
             players = players[::-1]
-
-            # for player in players:
-            #     if player.game_clock <= 0:
-            #         self.log.append(f'*** Early termination: both players ran out of time ***')
-            #         print(f'Early termination after round {round_num}: both players ran out of time')
-            #         break
             
-            # remaining_rounds = NUM_ROUNDS - round_num
-            # if remaining_rounds > 0:
-            #     if players[0].bankroll >=  2 * remaining_rounds:
-            #         self.log.append(f'*** Early termination: has insurmountable lead *** Remaining: {remaining_rounds} rounds')
-            #         print(f'Early termination after round {round_num}: has insurmountable lead')
-            #         break
-            #     elif players[1].bankroll >=  2 * remaining_rounds:
-            #         self.log.append(f'*** Early termination: has insurmountable lead *** Remaining: {remaining_rounds} rounds')
-            #         print(f'Early termination after round {round_num}:has insurmountable lead')
-            #         break
-
-
-
         self.log.append('')
         self.log.append('Final' + STATUS(players))
-
+        
         for player in players:
+            self.log.append('{} preflop bets EV: {}'.format(player.name, self.ev_preflop_bets[player.name]))
+            self.log.append('{} flop bets EV: {}'.format(player.name, self.ev_flop_bets[player.name]))
+            self.log.append('{} turn bets EV: {}'.format(player.name, self.ev_turn_bets[player.name]))
             player.stop()
+        name = GAME_LOG_FILENAME + '.txt'
+        print('Writing', name)
+        with open(name, 'w') as log_file:
+            log_file.write('\n'.join(self.log))
+        return STATUS(players)
 
-        # determine winner by bankroll
-        p1 = next(p for p in players if p.name == PLAYER_1_NAME)
-        p2 = next(p for p in players if p.name == PLAYER_2_NAME)
+import re
+from collections import Counter
 
-        if p1.bankroll > p2.bankroll:
-            winner = PLAYER_1_NAME
-        elif p2.bankroll > p1.bankroll:
-            winner = PLAYER_2_NAME
+def parse_result(s: str):
+    """
+    Extract (A_score, B_score) from strings like:
+      ", A (-2), B (2)"
+      ", A (302), B (-302)"
+    Returns: (a, b) as ints
+    """
+    m = re.search(r"A\s*\(\s*([+-]?\d+)\s*\)\s*,\s*B\s*\(\s*([+-]?\d+)\s*\)", s)
+    if not m:
+        raise ValueError(f"Could not parse result: {s!r}")
+    return int(m.group(1)), int(m.group(2))
+
+def summarize_runs(runs):
+    """
+    runs: list[str] where each string contains final A(x), B(y)
+    Prints win/loss/tie stats and returns a summary dict.
+    """
+    counts = Counter()
+    margins = []
+
+    for s in runs:
+        a, b = parse_result(s)
+        margins.append(a - b)  # positive => A ahead, negative => B ahead
+
+        if a > b:
+            counts["A_win"] += 1
+        elif b > a:
+            counts["B_win"] += 1
         else:
-            winner = None  # tie
+            counts["Tie"] += 1
 
-        # optionally write a full log for this single game
-        if write_full_log and winner is None:
-            name = GAME_LOG_FILENAME + '.txt'
-            print('Writing', name)
-            with open(name, 'w') as log_file:
-                log_file.write('\n'.join(self.log) + '\n')
-            print('Game ended in a tie!!!!!!!')
-
-        return winner, p1.game_clock, p2.game_clock
-
-
-if __name__ == '__main__':
-    RESULTS_FILE = GAME_LOG_FILENAME + '_summary.txt'
-
-    N_GAMES = 1
-
-    wins = {
-        PLAYER_1_NAME: 0,
-        PLAYER_2_NAME: 0,
-        'ties': 0
+    total = len(runs)
+    summary = {
+        "total": total,
+        "A_wins": counts["A_win"],
+        "B_wins": counts["B_win"],
+        "ties": counts["Tie"],
+        "A_win_rate": counts["A_win"] / total if total else 0.0,
+        "B_win_rate": counts["B_win"] / total if total else 0.0,
+        "tie_rate": counts["Tie"] / total if total else 0.0,
+        "avg_margin_A_minus_B": sum(margins) / total if total else 0.0,
+        "avg_abs_margin": sum(abs(x) for x in margins) / total if total else 0.0,
     }
 
-    # clear the summary file
-    with open(RESULTS_FILE, 'w') as f:
-        f.write('')
+    print(f"Total: {summary['total']}")
+    print(f"A wins: {summary['A_wins']} ({summary['A_win_rate']:.1%})")
+    print(f"B wins: {summary['B_wins']} ({summary['B_win_rate']:.1%})")
+    print(f"Ties:   {summary['ties']} ({summary['tie_rate']:.1%})")
+    print(f"Avg (A-B): {summary['avg_margin_A_minus_B']:.2f}")
+    print(f"Avg |A-B|: {summary['avg_abs_margin']:.2f}")
 
-    for i in range(1, N_GAMES + 1):
-        print(f'=== Game {i} / {N_GAMES} ===')
-        game = Game()
-        winner, p1_clock, p2_clock = game.run(write_full_log=True, game_index=i)
+    return summary
 
-        if winner is None:
-            wins['ties'] += 1
-            line = f'Game #{i}: tie\n'
-        else:
-            wins[winner] += 1
-            line = f'Game #{i}: winner = {winner}\n'
-
-        with open(RESULTS_FILE, 'a') as f:
-            f.write(line)
-            f.write("Time left p1, p2 " + p1_clock.__str__() + " | "+ p2_clock.__str__() + '\n')
-
-    # final tallies
-    summary = (
-        f'Total games: {N_GAMES}\n'
-        f'{PLAYER_1_NAME} wins: {wins[PLAYER_1_NAME]}\n'
-        f'{PLAYER_2_NAME} wins: {wins[PLAYER_2_NAME]}\n'
-        f'Ties: {wins["ties"]}\n'
-    )
-    print(summary)
-    with open(RESULTS_FILE, 'a') as f:
-        f.write('\n' + summary)
+if __name__ == '__main__':
+        G = Game()
+        runs = []
+        for i in range(50):
+            runs.append(G.run())
+        
+        print(runs)
+        summarize_runs(runs)

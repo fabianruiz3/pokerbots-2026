@@ -14,13 +14,22 @@ constexpr int RAISE_SMALL = 2;
 constexpr int RAISE_LARGE = 3;
 constexpr int NUM_ACTIONS = 4;
 
-// Streets
+// Streets - CORRECTED to match game engine (7 streets, 0-6)
+// Street 0: Preflop betting
+// Street 1: Flop dealt (no actions in CFR - we skip this)
+// Street 2: BB discard (or no-op for SB)
+// Street 3: SB discard (or no-op for BB)  
+// Street 4: Flop betting (post-discards)
+// Street 5: Turn betting
+// Street 6: River betting
 constexpr int STREET_PREFLOP = 0;
-constexpr int STREET_FLOP = 1;
+constexpr int STREET_FLOP_DEAL = 1;     // Flop dealt, no betting
 constexpr int STREET_BB_DISCARD = 2;
 constexpr int STREET_SB_DISCARD = 3;
-constexpr int STREET_TURN = 4;
-constexpr int STREET_RIVER = 5;
+constexpr int STREET_FLOP_BET = 4;      // Flop betting (after discards)
+constexpr int STREET_TURN = 5;
+constexpr int STREET_RIVER = 6;
+constexpr int NUM_STREETS = 7;
 
 constexpr int STARTING_STACK = 400;
 constexpr int SMALL_BLIND = 1;
@@ -40,15 +49,14 @@ struct InfoKey {
   uint16_t hole_bucket = 0;
   uint16_t board_bucket = 0;
   uint8_t pot_bucket = 0;
-  uint8_t stack_bucket = 0;
   uint8_t hist_bucket = 0;
   uint8_t bb_discarded = 0;
   uint8_t sb_discarded = 0;
-  uint8_t legal_mask = 0; // 7-bit mask over NUM_DISTINCT_ACTIONS (for OpenSpiel-style safety)
+  uint8_t legal_mask = 0; // 7-bit mask over NUM_DISTINCT_ACTIONS
 
   bool operator==(const InfoKey& o) const noexcept {
     return player==o.player && street==o.street && hole_bucket==o.hole_bucket &&
-           board_bucket==o.board_bucket && pot_bucket==o.pot_bucket && stack_bucket==o.stack_bucket &&
+           board_bucket==o.board_bucket && pot_bucket==o.pot_bucket &&
            hist_bucket==o.hist_bucket && bb_discarded==o.bb_discarded && sb_discarded==o.sb_discarded &&
            legal_mask==o.legal_mask;
   }
@@ -67,7 +75,6 @@ uint16_t get_hole_bucket(const std::vector<uint8_t>& hole_cards);
 uint16_t get_hole_bucket_2card(uint8_t c1, uint8_t c2);
 uint16_t get_board_bucket(const std::vector<uint8_t>& board_cards);
 uint8_t get_pot_bucket(int pot);
-uint8_t get_stack_bucket(int eff_stack);
 uint8_t get_history_bucket(const std::vector<std::pair<int,int>>& betting_history);
 
 InfoKey compute_info_key(

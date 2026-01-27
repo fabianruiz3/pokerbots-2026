@@ -1,46 +1,82 @@
-# Toss'em Hold'em MCCFR (C++)
+# Toss'em Hold'em CFR Trainer (Fixed Version)
 
-This is a **standalone, fast C++ external-sampling MCCFR trainer** for the Pokerbots 2026 Toss'em Hold'em abstraction.
+## Street System (7 streets, 0-6)
 
-Why this exists:
-- OpenSpiel MCCFR is fast **only when the game is in C++**. When the game dynamics are implemented in Python, MCCFR calls back into Python for every `state.child()` and becomes **extremely slow** (what you saw as ~2 iter/s).
-- This trainer keeps the hot loop entirely in C++ (including state transitions + bucketing), but matches your Python abstraction shape:
-  - same streets / discards
-  - same 4 betting actions
-  - info-state = tuple of small ints + optional legal-action mask
-  - discards are **not learned** here (uniform / averaged), leaving discard learning to a separate DiscardNet if you want.
+The game engine uses this street numbering:
 
-## Build
+| Street | Description | Actions |
+|--------|-------------|---------|
+| 0 | Preflop betting | Fold/Call/Check/Raise |
+| 1 | Flop dealt | (skipped - no player actions) |
+| 2 | BB Discard | Discard if BB, else CheckAction |
+| 3 | SB Discard | Discard if SB, else CheckAction |
+| 4 | Flop betting | Fold/Call/Check/Raise |
+| 5 | Turn betting | Fold/Call/Check/Raise |
+| 6 | River betting | Fold/Call/Check/Raise |
+
+## Changes from Previous Version
+
+1. **Street numbering fixed**: Now matches game engine (0, 2, 3, 4, 5, 6)
+2. **Removed stack_bucket**: Simplified abstraction
+3. **V2 binary format**: 75 bytes per node (vs 76+ in V1)
+4. **Checkpointing**: Saves progress every 500k iterations
+
+## Binary Format V2
+
+Header (24 bytes):
+- magic: 4 bytes (0x544F5353 = 'TOSS')
+- version: 4 bytes (2)
+- iterations: 8 bytes
+- num_nodes: 8 bytes
+
+Per node (75 bytes):
+- player: 1 byte
+- street: 1 byte (0, 2, 3, 4, 5, 6)
+- hole_bucket: 2 bytes (0-39 for 3-card, 0-168 for 2-card)
+- board_bucket: 2 bytes (0-24)
+- pot_bucket: 1 byte (0-5)
+- hist_bucket: 1 byte (0-5)
+- flags: 1 byte (bb_discarded:1, sb_discarded:1, legal_mask:6)
+- regret: 32 bytes (4 doubles)
+- strat_sum: 32 bytes (4 doubles)
+- reserved: 2 bytes
+
+## Building
 
 ```bash
-cd tossem_cfr_cpp
-mkdir -p build
-cd build
-cmake .. -DCMAKE_BUILD_TYPE=Release
-cmake --build . -j
+mkdir -p build && cd build
+cmake ..
+make -j$(nproc)
 ```
 
-## Run
+## Running
 
 ```bash
-./build/train_mccfr --iters 2000000 --threads 8 --batch 200000 --out cfr_strategy.bin
+# Default: 1M iterations
+./train_mccfr
+
+# Custom settings
+./train_mccfr -i 5000000 -t 32 -o cfr_strategy.bin
+
+# Options:
+#   -i, --iters       Total iterations (default: 1000000)
+#   -t, --threads     Number of threads (default: auto)
+#   -b, --batch       Batch size per thread (default: 20000)
+#   -c, --checkpoint  Checkpoint interval (default: 500000)
+#   -o, --out         Output file (default: cfr_strategy.bin)
 ```
 
-It prints per-batch throughput and number of discovered info-states.
+## Expected Output
 
-## Output format
+With sufficient iterations (5M+), expect:
+- ~500k-2M unique states
+- Good preflop coverage (street 0: 2-5% of nodes)
+- Balanced distribution across streets 4, 5, 6
 
-Binary file `cfr_strategy.bin`:
-- magic = `TCFR1` (5 bytes)
-- `int64 iterations`
-- `uint64 num_nodes`
-- then repeated per-node:
-  - `InfoKey` fields (player, street, hole_bucket, board_bucket, pot_bucket, stack_bucket, hist_bucket, bb_discarded, sb_discarded, legal_mask)
-  - `regret[4]` doubles
-  - `strategy_sum[4]` doubles
+## Bucket Sizes
 
-You can load this into Python or your C++ runtime bot.
-
-## Notes
-- This is intended as the **first big step** toward “all-C++” training without needing to compile a custom OpenSpiel game.
-- If you later want OpenSpiel’s exploitability tools, you can still implement the game in C++ and plug into OpenSpiel, but that is a larger build + integration effort.
+- Hole buckets (3-card): 40
+- Hole buckets (2-card): 169
+- Board buckets: 25
+- Pot buckets: 6
+- History buckets: 6

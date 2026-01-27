@@ -610,6 +610,8 @@ class Player(Bot):
 
         our_cruise = self._our_cruise_proximity(game_state)
         opp_cruise = self._opponent_cruise_proximity(game_state)
+        mn, mx = round_state.raise_bounds()
+        return RaiseAction(mx)
 
         # Track opponent's preflop aggression
         if opp_pip > 2:  # Opponent raised

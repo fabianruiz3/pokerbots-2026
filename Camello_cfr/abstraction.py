@@ -1,5 +1,6 @@
 """
 Action abstraction constants for CFR strategy - matches C++ tossem_abs namespace.
+VERSION 3: 7-street system matching game engine
 """
 
 # Betting action IDs (0..3) - matches tossem_abs
@@ -16,13 +17,22 @@ DISCARD2 = 6
 NUM_DISCARD_ACTIONS = 3
 NUM_DISTINCT_ACTIONS = NUM_ACTIONS + NUM_DISCARD_ACTIONS  # 7
 
-# Street constants - matches C++ tossem_abs
+# Street constants - 7-street system matching game engine
+# Street 0: Preflop betting
+# Street 1: Flop dealt (no actions - skip in CFR)
+# Street 2: BB discard (or forced CheckAction if you're SB)
+# Street 3: SB discard (or forced CheckAction if you're BB)
+# Street 4: Flop betting (post-discards)
+# Street 5: Turn betting
+# Street 6: River betting
 STREET_PREFLOP = 0
-STREET_FLOP = 1
+STREET_FLOP_DEAL = 1     # Flop dealt, no player actions
 STREET_BB_DISCARD = 2
 STREET_SB_DISCARD = 3
-STREET_TURN = 4
-STREET_RIVER = 5
+STREET_FLOP_BET = 4      # Flop betting (after discards)
+STREET_TURN = 5
+STREET_RIVER = 6
+NUM_STREETS = 7
 
 # Stack/pot constants
 STARTING_STACK = 400
@@ -30,52 +40,29 @@ SMALL_BLIND = 1
 BIG_BLIND = 2
 
 
-def board_len_to_street(board_len, bb_discarded, sb_discarded):
+def engine_street_to_cfr_street(engine_street, is_bb, bb_discarded, sb_discarded):
     """
-    Convert board length and discard state to street number.
+    Convert game engine street number to CFR street.
     
-    Board progression in Toss'em:
-    - Preflop: board_len = 0
-    - Flop: board_len = 2 (after 2-card flop dealt)
-    - BB Discard: board_len = 2, waiting for BB to discard
-    - SB Discard: board_len = 3 (BB's card added to board)
-    - Turn: board_len = 5 (SB's card + turn card added)
-    - River: board_len = 6
+    The game engine uses streets 0-6 directly:
+    - 0: Preflop betting
+    - 1: (Flop dealt - no actions)
+    - 2: First discard phase (BB discards if you're BB, else CheckAction)
+    - 3: Second discard phase (SB discards if you're SB, else CheckAction)
+    - 4: Flop betting (post-discards)
+    - 5: Turn betting
+    - 6: River betting
+    
+    For CFR lookup, we use the same numbering.
     """
-    if board_len == 0:
-        return STREET_PREFLOP
-    elif board_len == 2:
-        # Flop is dealt, but discards haven't happened yet OR we're in flop betting
-        if not bb_discarded:
-            return STREET_FLOP  # Still on flop betting or BB about to discard
-        else:
-            return STREET_FLOP  # Flop betting after would be weird, but default to flop
-    elif board_len == 3:
-        # BB has discarded their card to the board
-        return STREET_SB_DISCARD if bb_discarded and not sb_discarded else STREET_FLOP
-    elif board_len == 4:
-        # This shouldn't happen in normal Toss'em flow
-        return STREET_TURN
-    elif board_len == 5:
-        # SB discarded + turn card dealt
-        return STREET_TURN
-    elif board_len >= 6:
-        return STREET_RIVER
-    else:
-        return STREET_FLOP
+    return engine_street
 
 
 def get_hole_bucket_3card(hole_cards):
     """
-    Compute hole bucket for 3-card hand - matches C++ hole_bucket_3card.
-    
-    Args:
-        hole_cards: list of card ints (rank*4 + suit format) or strings
-    
-    Returns:
-        bucket index 0-59
+    Compute hole bucket for 3-card hand - matches C++ get_hole_bucket.
+    Returns bucket 0-39 (40 buckets total).
     """
-    # Convert to rank*4+suit format if needed
     cards = []
     for c in hole_cards:
         if isinstance(c, int):
@@ -115,20 +102,14 @@ def get_hole_bucket_3card(hole_cards):
     strength += (flush_count - 1) * 8
     strength += straight_potential * 5
     
-    # Bucket into 60 bins
-    bucket = strength // 4
-    return max(0, min(59, bucket))
+    # Bucket into 40 bins
+    bucket = strength // 6
+    return max(0, min(39, bucket))
 
 
 def get_hole_bucket_2card(hole_cards):
     """
-    Compute hole bucket for 2-card hand - matches C++ hole_bucket_2card.
-    
-    Args:
-        hole_cards: list of 2 card ints or strings
-    
-    Returns:
-        bucket index
+    Compute hole bucket for 2-card hand - matches C++ get_hole_bucket_2card.
     """
     cards = []
     for c in hole_cards:
@@ -154,15 +135,17 @@ def get_hole_bucket_2card(hole_cards):
     return base
 
 
+def get_hole_bucket(hole_cards):
+    """Get hole bucket for 2 or 3 card hand."""
+    if len(hole_cards) == 2:
+        return get_hole_bucket_2card(hole_cards)
+    return get_hole_bucket_3card(hole_cards)
+
+
 def get_board_bucket(board_cards):
     """
-    Compute board bucket - matches C++ board_bucket.
-    
-    Args:
-        board_cards: list of card ints or strings
-    
-    Returns:
-        bucket index 0-79
+    Compute board bucket - matches C++ get_board_bucket.
+    Returns bucket 0-24 (25 buckets total).
     """
     if not board_cards:
         return 0
@@ -199,22 +182,19 @@ def get_board_bucket(board_cards):
     
     high_card = max(ranks)
     
-    # Broadway count (rank >= 8, which is T in 0-12 scale)
-    broadway = sum(1 for r in ranks if r >= 8)
-    
-    # Feature vector: [max_rank_count, max_suit_count, straight_potential, high_card, broadway]
-    bucket = 0
-    bucket += (max_rank_count - 1) * 20
-    bucket += (max_suit_count - 1) * 8
-    bucket += max(0, straight_potential - 2) * 4
-    bucket += broadway * 2
-    bucket += high_card // 2
-    
-    return max(0, min(79, bucket))
+    # Simplified features
+    paired = 1 if max_rank_count >= 2 else 0
+    flush_draw = min(2, max_suit_count - 1)
+    straight_draw = min(2, max(0, straight_potential - 2))
+    high = 1 if high_card >= 10 else 0  # T=8, J=9, Q=10, K=11, A=12
+
+    # Combine into ~25 buckets
+    bucket = paired * 12 + flush_draw * 4 + straight_draw * 2 + high
+    return min(24, bucket)
 
 
 def get_pot_bucket(pot):
-    """Matches C++ pot_bucket."""
+    """Matches C++ get_pot_bucket. Returns 0-5."""
     if pot <= 4:
         return 0
     if pot <= 10:
@@ -228,47 +208,31 @@ def get_pot_bucket(pot):
     return 5
 
 
-def get_stack_bucket(eff_stack):
-    """Matches C++ stack_bucket."""
-    if eff_stack <= 50:
-        return 0
-    if eff_stack <= 120:
-        return 1
-    if eff_stack <= 220:
-        return 2
-    if eff_stack <= 320:
-        return 3
-    if eff_stack <= 400:
-        return 4
-    return 5
-
-
 def get_history_bucket(betting_history):
     """
-    Matches C++ history_bucket.
-    
-    Args:
-        betting_history: list of (player, action_id) tuples
+    Matches C++ get_history_bucket. Returns 0-5.
     """
-    L = len(betting_history)
-    if L == 0:
+    if not betting_history:
         return 0
-    if L <= 2:
-        a = betting_history[-1][1]
-        return min(3, a) + 1
     
-    raises = sum(1 for _, a in betting_history if a >= RAISE_SMALL)
-    
-    if L <= 4:
-        return 4 + min(3, raises)
+    raises = 0
+    large_raises = 0
+    for _, a in betting_history:
+        if a == RAISE_SMALL:
+            raises += 1
+        elif a == RAISE_LARGE:
+            raises += 1
+            large_raises += 1
     
     if raises == 0:
-        return 8
-    if raises == 1:
-        return 9
+        return 1  # passive
+    if raises == 1 and large_raises == 0:
+        return 2  # one small raise
+    if raises == 1 and large_raises == 1:
+        return 3  # one large raise
     if raises == 2:
-        return 10
-    return 11
+        return 4  # two raises
+    return 5  # very aggressive
 
 
 def card_str_to_int(card_str):
@@ -276,7 +240,7 @@ def card_str_to_int(card_str):
     Convert card string like 'Ah' to int format (rank*4 + suit).
     
     Rank: 2=0, 3=1, ..., T=8, J=9, Q=10, K=11, A=12
-    Suit: c=0, d=1, h=2, s=3 (or any consistent mapping)
+    Suit: c=0, d=1, h=2, s=3
     """
     rank_map = {'2': 0, '3': 1, '4': 2, '5': 3, '6': 4, '7': 5, '8': 6, '9': 7,
                 'T': 8, 'J': 9, 'Q': 10, 'K': 11, 'A': 12}

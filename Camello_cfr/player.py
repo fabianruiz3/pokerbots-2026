@@ -21,8 +21,8 @@ import pkrbot
 from cpp_cfr import CppCFR
 from abstraction import (
     FOLD, CHECK_CALL, RAISE_SMALL, RAISE_LARGE, NUM_ACTIONS,
-    STREET_PREFLOP, STREET_FLOP, STREET_BB_DISCARD, STREET_SB_DISCARD, STREET_TURN, STREET_RIVER,
-    board_len_to_street, BIG_BLIND
+    STREET_PREFLOP, STREET_BB_DISCARD, STREET_SB_DISCARD, STREET_FLOP_BET, STREET_TURN, STREET_RIVER,
+    BIG_BLIND
 )
 
 FINAL_BOARD_CARDS = 6
@@ -160,12 +160,29 @@ class Player(Bot):
     # Cruise Control
     # =====================
 
+    def should_drain_to_one(self, game_state, hero_idx):
+        lead = game_state.bankroll
+        R = NUM_ROUNDS - game_state.round_num + 1  # remaining hands incl this one
+
+        hero_is_sb = bool(hero_idx)  # usually true in Pokerbots engines
+
+        if hero_is_sb:
+            sb_cnt = (R + 1) // 2
+            bb_cnt = R // 2
+        else:
+            bb_cnt = (R + 1) // 2
+            sb_cnt = R // 2
+
+        drain_cost = sb_cnt * 1 + bb_cnt * 2
+        return lead >= (drain_cost + 1)
+
+
     def _should_cruise(self, game_state):
         """Check if we should enter cruise mode."""
         bankroll = game_state.bankroll
         remaining = max(1, NUM_ROUNDS - game_state.round_num)
-        safety_margin = 1.5 * remaining + 2
-        return bankroll >= safety_margin
+        safety_margin = 1.5 * remaining + 5
+        return bankroll > safety_margin
 
     def _our_cruise_proximity(self, game_state):
         """How close are WE to cruising?"""
@@ -695,8 +712,20 @@ class Player(Bot):
     # =====================
     
     def _get_street(self, round_state):
-        board_len = len(self._get_board_cards(round_state))
-        return board_len_to_street(board_len, self.bb_discarded, self.sb_discarded)
+        """
+        Get the current street from round_state.
+        
+        Game engine street values:
+        - 0: Preflop betting
+        - 2: BB discard (or CheckAction if you're SB)
+        - 3: SB discard (or CheckAction if you're BB)
+        - 4: Flop betting (post-discards)
+        - 5: Turn betting
+        - 6: River betting
+        
+        Note: Street 1 is skipped (flop dealt, no actions).
+        """
+        return round_state.street
 
     # =====================
     # CFR Action Selection
@@ -842,20 +871,21 @@ class Player(Bot):
         self.sb_discarded = False
 
     def handle_round_over(self, game_state, terminal_state, active_player):
-        self.cruise_mode = self._should_cruise(game_state)
         my_delta = terminal_state.deltas[active_player]
+        self.cruise_mode = self.should_drain_to_one(game_state, active_player)
         if my_delta > 0 and my_delta <= 2:
             self.opponent_fold_count += 1
         
-        if self.total_hands % 100 == 0 and self.total_hands > 0:
-            total = self.cfr_hits + self.cfr_misses
-            if total > 0:
-                print(f"[DEBUG] Hand {self.total_hands}: CFR hit rate = {self.cfr_hits/total*100:.1f}% ({self.cfr_hits}/{total})")
-                print(self.cfr.debug_miss_summary(topk=3))
+        # if self.total_hands % 100 == 0 and self.total_hands > 0:
+        #     total = self.cfr_hits + self.cfr_misses
+        #     if total > 0:
+        #         print(f"[DEBUG] Hand {self.total_hands}: CFR hit rate = {self.cfr_hits/total*100:.1f}% ({self.cfr_hits}/{total})")
+        #         print(self.cfr.debug_miss_summary(topk=3))
         # print(game_state.game_clock)
 
     def get_action(self, game_state, round_state, active_player):
         legal = round_state.legal_actions()
+        street = round_state.street
 
         if self.cruise_mode:
             if FoldAction in legal:

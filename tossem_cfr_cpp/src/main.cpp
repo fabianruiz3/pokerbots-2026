@@ -88,7 +88,12 @@ static double cfr_traverse(game::GameState& st,
     if (0 <= a && a < tossem_abs::NUM_ACTIONS) node.strat_sum[a] += reach * strat[a];
   }
 
-  if (player == update_player) {
+  // Use FULL TRAVERSAL at preflop (street 0) for better coverage
+  // Use external sampling for later streets to keep computation tractable
+  bool use_full_traversal = (st.street == tossem_abs::STREET_PREFLOP);
+
+  if (player == update_player || use_full_traversal) {
+    // Full traversal: explore all actions
     std::array<double, tossem_abs::NUM_ACTIONS> action_values{{0,0,0,0}};
     for (int a : legal) {
       game::Undo u;
@@ -101,13 +106,16 @@ static double cfr_traverse(game::GameState& st,
     double node_value = 0.0;
     for (int a : legal) node_value += strat[a] * action_values[a];
 
-    for (int a : legal) {
-      if (0 <= a && a < tossem_abs::NUM_ACTIONS) node.regret[a] += (action_values[a] - node_value);
+    // Only update regrets if this is the update player
+    if (player == update_player) {
+      for (int a : legal) {
+        if (0 <= a && a < tossem_abs::NUM_ACTIONS) node.regret[a] += (action_values[a] - node_value);
+      }
     }
 
     return node_value;
   } else {
-    // External sampling: sample opponent action
+    // External sampling: sample opponent action (for non-preflop streets)
     std::vector<double> probs;
     probs.reserve(legal.size());
     double sum = 0.0;
@@ -166,7 +174,10 @@ static void merge_into(Table& dst, const Table& src) {
   }
 }
 
-static void save_binary(const std::string& path, const Table& table, int64_t iterations) {
+// V2 binary format: 75 bytes per node (no stack_bucket)
+// Header: magic(4) + version(4) + iterations(8) + num_nodes(8) = 24 bytes
+// Per node: key(9 bytes) + regret(32) + strat_sum(32) + reserved(2) = 75 bytes
+static void save_binary_v2(const std::string& path, const Table& table, int64_t iterations) {
   std::ofstream out(path, std::ios::binary);
   if (!out) {
     std::cerr << "ERROR: Could not open output file: " << path << std::endl;
@@ -175,32 +186,40 @@ static void save_binary(const std::string& path, const Table& table, int64_t ite
 
   // Header
   const uint32_t magic = 0x544F5353; // 'TOSS'
-  const uint32_t version = 1;
+  const uint32_t version = 2;  // V2 format
   out.write(reinterpret_cast<const char*>(&magic), sizeof(magic));
   out.write(reinterpret_cast<const char*>(&version), sizeof(version));
   out.write(reinterpret_cast<const char*>(&iterations), sizeof(iterations));
   uint64_t n = static_cast<uint64_t>(table.size());
   out.write(reinterpret_cast<const char*>(&n), sizeof(n));
 
-  // Rows
+  // Rows - 75 bytes each
   for (const auto& kv : table) {
     const tossem_abs::InfoKey& k = kv.first;
     const Node& node = kv.second;
 
-    out.write(reinterpret_cast<const char*>(&k.player), sizeof(k.player));
-    out.write(reinterpret_cast<const char*>(&k.street), sizeof(k.street));
-    out.write(reinterpret_cast<const char*>(&k.hole_bucket), sizeof(k.hole_bucket));
-    out.write(reinterpret_cast<const char*>(&k.board_bucket), sizeof(k.board_bucket));
-    out.write(reinterpret_cast<const char*>(&k.pot_bucket), sizeof(k.pot_bucket));
-    out.write(reinterpret_cast<const char*>(&k.stack_bucket), sizeof(k.stack_bucket));
-    out.write(reinterpret_cast<const char*>(&k.hist_bucket), sizeof(k.hist_bucket));
-    out.write(reinterpret_cast<const char*>(&k.bb_discarded), sizeof(k.bb_discarded));
-    out.write(reinterpret_cast<const char*>(&k.sb_discarded), sizeof(k.sb_discarded));
-    out.write(reinterpret_cast<const char*>(&k.legal_mask), sizeof(k.legal_mask));
+    // Key: 9 bytes (no stack_bucket)
+    out.write(reinterpret_cast<const char*>(&k.player), sizeof(k.player));           // 1
+    out.write(reinterpret_cast<const char*>(&k.street), sizeof(k.street));           // 1
+    out.write(reinterpret_cast<const char*>(&k.hole_bucket), sizeof(k.hole_bucket)); // 2
+    out.write(reinterpret_cast<const char*>(&k.board_bucket), sizeof(k.board_bucket)); // 2
+    out.write(reinterpret_cast<const char*>(&k.pot_bucket), sizeof(k.pot_bucket));   // 1
+    out.write(reinterpret_cast<const char*>(&k.hist_bucket), sizeof(k.hist_bucket)); // 1
+    
+    // Pack bb_discarded, sb_discarded, legal_mask into combined byte
+    uint8_t flags = (k.bb_discarded ? 0x80 : 0) | (k.sb_discarded ? 0x40 : 0) | (k.legal_mask & 0x3F);
+    out.write(reinterpret_cast<const char*>(&flags), sizeof(flags));                 // 1 = 9 total
 
-    out.write(reinterpret_cast<const char*>(node.regret.data()), sizeof(double) * tossem_abs::NUM_ACTIONS);
-    out.write(reinterpret_cast<const char*>(node.strat_sum.data()), sizeof(double) * tossem_abs::NUM_ACTIONS);
+    // Data: 64 bytes
+    out.write(reinterpret_cast<const char*>(node.regret.data()), sizeof(double) * tossem_abs::NUM_ACTIONS);     // 32
+    out.write(reinterpret_cast<const char*>(node.strat_sum.data()), sizeof(double) * tossem_abs::NUM_ACTIONS);  // 32
+
+    // Reserved: 2 bytes for future use
+    uint16_t reserved = 0;
+    out.write(reinterpret_cast<const char*>(&reserved), sizeof(reserved));           // 2 = 75 total
   }
+  
+  std::cout << "Saved " << path << " (v2 format, " << table.size() << " nodes, " << iterations << " iters)\n";
 }
 
 static int64_t parse_i64(const char* s) {
@@ -208,9 +227,10 @@ static int64_t parse_i64(const char* s) {
 }
 
 int main(int argc, char** argv) {
-  int64_t iters = 200000;
+  int64_t iters = 1000000;
   int threads = std::max(1u, std::thread::hardware_concurrency() ? std::thread::hardware_concurrency() - 1 : 1u);
   int64_t batch = 20000;
+  int64_t checkpoint_interval = 500000;
   std::string out_path = "cfr_strategy.bin";
 
   for (int i=1;i<argc;++i) {
@@ -218,18 +238,27 @@ int main(int argc, char** argv) {
     if ((a=="-i" || a=="--iters") && i+1<argc) iters = parse_i64(argv[++i]);
     else if ((a=="-t" || a=="--threads") && i+1<argc) threads = std::stoi(argv[++i]);
     else if ((a=="-b" || a=="--batch") && i+1<argc) batch = parse_i64(argv[++i]);
+    else if ((a=="-c" || a=="--checkpoint") && i+1<argc) checkpoint_interval = parse_i64(argv[++i]);
     else if ((a=="-o" || a=="--out") && i+1<argc) out_path = argv[++i];
     else if (a=="-h" || a=="--help") {
-      std::cout << "Usage: train_mccfr [-i iters] [-t threads] [-b batch] [-o out.bin]\n";
+      std::cout << "Usage: train_mccfr [-i iters] [-t threads] [-b batch] [-c checkpoint] [-o out.bin]\n";
+      std::cout << "  -i, --iters       Total iterations (default: 1000000)\n";
+      std::cout << "  -t, --threads     Number of threads (default: auto)\n";
+      std::cout << "  -b, --batch       Batch size per thread (default: 20000)\n";
+      std::cout << "  -c, --checkpoint  Checkpoint interval (default: 500000)\n";
+      std::cout << "  -o, --out         Output file (default: cfr_strategy.bin)\n";
       return 0;
     }
   }
 
-  std::cout << "Toss'em Hold'em MCCFR (C++ standalone)\n";
-  std::cout << "iters=" << iters << " threads=" << threads << " batch=" << batch << "\n";
+  std::cout << "Toss'em Hold'em MCCFR (C++ standalone) - V2 Format\n";
+  std::cout << "Streets: 0=PREFLOP, 2=BB_DISCARD, 3=SB_DISCARD, 4=FLOP_BET, 5=TURN, 6=RIVER\n";
+  std::cout << "iters=" << iters << " threads=" << threads << " batch=" << batch 
+            << " checkpoint=" << checkpoint_interval << "\n";
 
   Table global;
   int64_t done = 0;
+  int64_t last_checkpoint = 0;
   auto t0 = Clock::now();
 
   std::random_device rd;
@@ -266,9 +295,15 @@ int main(int argc, char** argv) {
     std::cout << "  " << done << "/" << iters << "  rate=" << static_cast<long long>(rate)
               << "/s total=" << static_cast<long long>(total_rate)
               << "/s states=" << global.size() << "\n";
+    
+    // Checkpoint
+    if (done - last_checkpoint >= checkpoint_interval) {
+      std::string cp_path = out_path + ".checkpoint_" + std::to_string(done/1000) + "k";
+      save_binary_v2(cp_path, global, done);
+      last_checkpoint = done;
+    }
   }
 
-  save_binary(out_path, global, done);
-  std::cout << "Saved: " << out_path << " (states=" << global.size() << ")\n";
+  save_binary_v2(out_path, global, done);
   return 0;
 }

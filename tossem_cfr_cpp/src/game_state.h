@@ -56,7 +56,8 @@ struct GameState {
   std::array<uint8_t,46> deck;
   int deck_idx = 0;
 
-  // street & betting
+  // street - uses 7-street system (0-6)
+  // 0: PREFLOP, 1: FLOP_DEAL (skip), 2: BB_DISCARD, 3: SB_DISCARD, 4: FLOP_BET, 5: TURN, 6: RIVER
   int street = tossem_abs::STREET_PREFLOP;
   std::array<int,2> pips{{SMALL_BLIND, BIG_BLIND}};
   std::array<int,2> stacks{{STARTING_STACK - SMALL_BLIND, STARTING_STACK - BIG_BLIND}};

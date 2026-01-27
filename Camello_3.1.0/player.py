@@ -841,6 +841,8 @@ class Player(Bot):
 
     def handle_round_over(self, game_state, terminal_state, active_player):
         self.cruise_mode = self._should_cruise(game_state)
+        print("bankroll:", game_state.bankroll, "round:", game_state.round_num,
+              "cruise_mode:", self.cruise_mode)
         
         my_delta = terminal_state.deltas[active_player]
         if my_delta > 0 and my_delta <= 2:
@@ -848,7 +850,6 @@ class Player(Bot):
 
     def get_action(self, game_state, round_state, active_player):
         legal = round_state.legal_actions()
-
         # Cruise control
         if self.cruise_mode:
             if FoldAction in legal:
